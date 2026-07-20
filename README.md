@@ -1,5 +1,7 @@
 # Simply-Fit
 
+**Live app:** https://simply-fit-apk.streamlit.app/
+
 A personal weight management system built around one core idea — the user should not have to log their food. Daily weight is already the net result of everything the body consumed and burned. Simply-Fit extracts that signal and builds everything else from it.
 
 ## Background
