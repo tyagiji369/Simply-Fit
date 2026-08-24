@@ -598,14 +598,13 @@ elif st.session_state.page == "goal":
     title("What are you<br><em>working towards?</em>",
           "Your goal shapes every calorie target and recommendation.")
 
-    goal = st.radio("", ["lose", "gain", "maintain"],
+    goal = st.radio("Select your primary goal:", ["lose", "gain", "maintain"],
                     format_func=lambda x: {
                         "lose": "Lose weight",
                         "gain": "Gain weight",
                         "maintain": "Maintain weight"
                     }[x],
-                    index=["lose","gain","maintain"].index(st.session_state.goal),
-                    label_visibility="collapsed")
+                    index=["lose","gain","maintain"].index(st.session_state.goal))
 
     descs = {
         "lose":     ("success", "Achieve a calorie deficit through diet and movement. Safe limit: 1 kg/week."),
