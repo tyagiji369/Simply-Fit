@@ -189,6 +189,18 @@ div[data-testid="column"]:first-child .stButton > button {
 </style>
 """, unsafe_allow_html=True)
 
+# Sidebar for Gemini API Key setup
+with st.sidebar:
+    st.markdown("### 🔑 API Settings")
+    gemini_key_input = st.text_input(
+        "Gemini API Key (Optional):",
+        type="password",
+        value=os.getenv("GEMINI_API_KEY", ""),
+        help="Paste a free Google Gemini API key from https://aistudio.google.com to enable real-time Gemini LLM coaching."
+    )
+    if gemini_key_input:
+        st.session_state["gemini_api_key"] = gemini_key_input
+
 # ═══════════════════════════════════════════════════════════════
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════
@@ -440,7 +452,8 @@ def get_coach_response(profile, weight_log, question, target_weekly):
             "tdee": st.session_state.get("tdee", 2200)
         }
         target_rate = (target_weekly * KCAL_PER_KG) / 7.0 if abs(target_weekly) > 10 else target_weekly
-        res = agent_coach.run_agent(prof_dict, weight_log, question, target_rate, gemini_api_key=os.getenv("GEMINI_API_KEY"))
+        api_key = st.session_state.get("gemini_api_key") or os.getenv("GEMINI_API_KEY")
+        res = agent_coach.run_agent(prof_dict, weight_log, question, target_rate, gemini_api_key=api_key)
         return res["response"]
     except Exception as e:
         recent = weight_log[-7:]
@@ -732,7 +745,7 @@ elif st.session_state.page == "tracker":
             st.rerun()
 
     if n >= 7:
-        flags, smoothed              = detect_anomalies(log)
+        flags, smoothed             = detect_anomalies(log)
         kcal_balance, weekly_kg, r2 = estimate_balance(log)
         target_weekly        = (target * 7) / KCAL_PER_KG
 
