@@ -25,7 +25,7 @@ from src.calibration import run_nhanes_calibration_test
 # PAGE CONFIG & STYLES
 # ═══════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Simply-Fit | Step-by-Step AI Weight & Calorie Pipeline",
+    page_title="Simply-Fit | Personal Weight & Calorie Management",
     page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -44,7 +44,7 @@ html, body, [class*="css"] {
 .main .block-container {
     padding-top: 1.5rem;
     padding-bottom: 4rem;
-    max-width: 1100px;
+    max-width: 1080px;
 }
 
 /* Stat Cards */
@@ -75,16 +75,15 @@ html, body, [class*="css"] {
     margin-top: 0.35rem;
 }
 
-/* Step Badges */
 .step-badge {
     background: #E0F2FE;
     color: #0369A1;
     font-weight: 700;
-    font-size: 0.75rem;
-    padding: 3px 8px;
-    border-radius: 4px;
+    font-size: 0.78rem;
+    padding: 4px 10px;
+    border-radius: 6px;
     display: inline-block;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.6rem;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -98,6 +97,7 @@ if "user_profile" not in st.session_state:
         "gender": "Male",
         "height_cm": 180,
         "start_weight": 82.0,
+        "goal_type": "Lose Weight",
         "target_weight": 75.0,
         "target_weekly_change": -0.5,
         "disease": "None",
@@ -124,26 +124,26 @@ if "chat_history" not in st.session_state:
 st.markdown("""
 <div style="margin-bottom: 1.2rem;">
     <h2 style="font-weight: 800; font-size: 1.8rem; margin: 0; color: #0F172A;">Simply-Fit</h2>
-    <p style="color: #64748B; font-size: 0.9rem; margin: 0;">Step-by-Step AI Weight Management & Passive Calorie Inference Platform</p>
+    <p style="color: #64748B; font-size: 0.9rem; margin: 0;">AI Weight Management & Passive Calorie Inference Platform</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
-# STEP-BY-STEP MULTI-TAB WORKFLOW
+# STEP-BY-STEP PAGE FLIPPING WORKFLOW
 # ═══════════════════════════════════════════════════════════════
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "Step 1: 👤 Profile & Target Goal",
-    "Step 2: 📈 Signal Processing & Calorie Inference",
-    "Step 3: 🔮 LSTM Time-Series Forecast",
-    "Step 4: 🤖 Smart AI Health Coach",
-    "Step 5: 🔬 Research Calibration (NHANES Test)"
+    "Step 1: 👤 Profile & Goals",
+    "Step 2: 📈 Signal Processing & ML",
+    "Step 3: 🔮 Deep Learning Forecast",
+    "Step 4: 🤖 Smart AI Coach",
+    "Step 5: 🔬 Research Metrics (NHANES)"
 ])
 
-# ── STEP 1: USER PROFILE & GOAL SETTINGS ───────────────────────
+# ── STEP 1: USER PROFILE & GOAL SETTINGS (GAIN / LOSE SUPPORT) ─
 with tab1:
     st.markdown("<span class='step-badge'>STEP 1 OF 5</span>", unsafe_allow_html=True)
-    st.markdown("### User Profile & Target Goal Settings")
-    st.caption("Configure your personal metrics. Click 'Save & Apply Profile' to update the calculations across all steps.")
+    st.markdown("### Profile & Goal Settings")
+    st.caption("Configure your personal metrics and target rate (supports both Weight Loss & Weight Gain goals).")
 
     p = st.session_state["user_profile"]
 
@@ -160,15 +160,26 @@ with tab1:
 
     with col2:
         start_w_in = st.number_input("Starting Weight (kg):", min_value=40.0, max_value=200.0, value=p["start_weight"], step=0.5)
-        target_w_in = st.number_input("Target Goal Weight (kg):", min_value=40.0, max_value=200.0, value=p["target_weight"], step=0.5)
-        rate_in = st.slider("Target Weight Loss Rate (kg/week):", min_value=-1.5, max_value=-0.1, value=p["target_weekly_change"], step=0.1)
+        goal_type_in = st.radio("Primary Goal:", ["Lose Weight", "Gain Weight", "Maintain Weight"], horizontal=True)
+
+        if goal_type_in == "Lose Weight":
+            target_w_in = st.number_input("Target Goal Weight (kg):", min_value=30.0, max_value=start_w_in - 0.5, value=min(75.0, start_w_in - 1.0), step=0.5)
+            rate_in = st.slider("Target Weight Loss Pace (kg/week):", min_value=-1.5, max_value=-0.1, value=-0.5, step=0.1)
+        elif goal_type_in == "Gain Weight":
+            target_w_in = st.number_input("Target Goal Weight (kg):", min_value=start_w_in + 0.5, max_value=220.0, value=start_w_in + 5.0, step=0.5)
+            rate_in = st.slider("Target Weight Gain Pace (kg/week):", min_value=0.1, max_value=1.5, value=0.4, step=0.1)
+        else: # Maintain
+            target_w_in = start_w_in
+            rate_in = 0.0
+            st.info("Maintaining current weight (Target Pace = 0.0 kg/week).")
 
     st.write("")
-    if st.button("💾 Save & Apply Profile Settings", type="primary", use_container_width=True):
+    if st.button("💾 Save Profile & Update Calculations", type="primary", use_container_width=True):
         st.session_state["user_profile"]["age"] = age_in
         st.session_state["user_profile"]["gender"] = gender_in
         st.session_state["user_profile"]["height_cm"] = height_in
         st.session_state["user_profile"]["start_weight"] = start_w_in
+        st.session_state["user_profile"]["goal_type"] = goal_type_in
         st.session_state["user_profile"]["target_weight"] = target_w_in
         st.session_state["user_profile"]["target_weekly_change"] = rate_in
         st.session_state["user_profile"]["disease"] = disease_in
@@ -177,7 +188,7 @@ with tab1:
         bmr = 10 * start_w_in + 6.25 * height_in - 5 * age_in + (5 if gender_in == "Male" else -161)
         st.session_state["user_profile"]["tdee"] = int(bmr * 1.375)
         
-        st.success("✅ Profile settings saved and applied across all modules!")
+        st.success("✅ Profile updated! Target pace set to " + f"{rate_in:+.1f} kg/week")
 
 # Calculate ML Pipeline Outputs based on current weight log
 weights = st.session_state["weight_log"]
@@ -187,8 +198,8 @@ ml_output = run_ml_pipeline(weights, target_weekly_change=prof["target_weekly_ch
 # ── STEP 2: SIGNAL PROCESSING & CALORIE INFERENCE ─────────────
 with tab2:
     st.markdown("<span class='step-badge'>STEP 2 OF 5</span>", unsafe_allow_html=True)
-    st.markdown("### Physiological Signal Processing & Passive Calorie Inference")
-    st.caption("Applies Exponential Weighted Moving Average (EWMA) filtering to extract fat-mass trends and Isolation Forest to drop water/sodium spikes.")
+    st.markdown("### Physiological Signal Processing & Calorie Inference")
+    st.caption("EWMA noise filtering removes scale noise; Isolation Forest drops water/sodium spikes.")
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
@@ -203,9 +214,9 @@ with tab2:
     with m2:
         st.markdown(f"""
         <div class="card-box">
-            <div class="metric-lbl">Inferred Daily Calorie Deficit</div>
+            <div class="metric-lbl">Inferred Calorie Balance</div>
             <div class="metric-val">{ml_output['kcal_per_day']:+.0f} <span style="font-size:0.9rem;">kcal/d</span></div>
-            <div class="metric-sub">Target Pace: {(prof['target_weekly_change'] * 7700) / 7:+.0f} kcal/d</div>
+            <div class="metric-sub">Target: {(prof['target_weekly_change'] * 7700) / 7:+.0f} kcal/d</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -229,38 +240,57 @@ with tab2:
 
     st.write("")
 
-    # Visual Plot
-    col_chart, col_log = st.columns([2.8, 1.2])
-    with col_chart:
-        fig, ax = plt.subplots(figsize=(7.5, 3.8), dpi=150)
-        fig.patch.set_facecolor("#FFFFFF")
-        ax.set_facecolor("#FAFAFA")
+    # Visual Plots (Multiple Graphs)
+    g1, g2 = st.columns([2.5, 1.5])
+    with g1:
+        fig1, ax1 = plt.subplots(figsize=(7, 3.8), dpi=150)
+        fig1.patch.set_facecolor("#FFFFFF")
+        ax1.set_facecolor("#FAFAFA")
 
         days = list(range(1, len(weights) + 1))
-        ax.plot(days, weights, color="#94A3B8", linestyle="--", marker="o", markersize=4, label="Raw Scale Readings", alpha=0.7)
-        ax.plot(days, ml_output["smoothed"], color="#2563EB", linewidth=2.4, label="EWMA Smoothed Trend (True Fat Mass)")
+        ax1.plot(days, weights, color="#94A3B8", linestyle="--", marker="o", markersize=4, label="Raw Scale Log", alpha=0.7)
+        ax1.plot(days, ml_output["smoothed"], color="#2563EB", linewidth=2.4, label="True Fat Mass Trend (EWMA)")
 
         anomaly_indices = [i + 1 for i, flag in enumerate(ml_output["anomaly_flags"]) if flag]
         if anomaly_indices:
             anomaly_weights = [weights[i - 1] for i in anomaly_indices]
-            ax.scatter(anomaly_indices, anomaly_weights, color="#EF4444", s=80, zorder=5, label="Isolation Forest Water Spike")
+            ax1.scatter(anomaly_indices, anomaly_weights, color="#EF4444", s=80, zorder=5, label="Isolation Forest Spike")
 
-        ax.set_title("EWMA Noise Filter & Anomaly Detection", fontsize=10.5, fontweight="bold", pad=10)
-        ax.set_xlabel("Day", fontsize=8.5)
-        ax.set_ylabel("Weight (kg)", fontsize=8.5)
-        ax.grid(True, linestyle=":", alpha=0.5)
-        ax.legend(fontsize=8, loc="upper right")
-        st.pyplot(fig)
+        ax1.set_title("Graph 1: Scale Readings vs EWMA Fat Mass Signal", fontsize=10, fontweight="bold")
+        ax1.set_xlabel("Day", fontsize=8.5)
+        ax1.set_ylabel("Weight (kg)", fontsize=8.5)
+        ax1.grid(True, linestyle=":", alpha=0.5)
+        ax1.legend(fontsize=8, loc="upper right")
+        st.pyplot(fig1)
 
-    with col_log:
+    with g2:
+        # Graph 2: Residuals Histogram (Anomaly Boundary)
+        residuals = np.array(weights) - ml_output["smoothed"]
+        fig2, ax2 = plt.subplots(figsize=(4.5, 3.8), dpi=150)
+        fig2.patch.set_facecolor("#FFFFFF")
+        ax2.set_facecolor("#FAFAFA")
+
+        ax2.hist(residuals, bins=10, color="#3B82F6", edgecolor="#1D4ED8", alpha=0.7)
+        ax2.axvline(0, color="#0F172A", linestyle="--", linewidth=1, label="Zero Bias")
+        ax2.set_title("Graph 2: Residual Distribution (Water Noise)", fontsize=9.5, fontweight="bold")
+        ax2.set_xlabel("Residual (Raw - EWMA)", fontsize=8)
+        ax2.set_ylabel("Frequency", fontsize=8)
+        ax2.grid(True, linestyle=":", alpha=0.5)
+        ax2.legend(fontsize=8)
+        st.pyplot(fig2)
+
+    # Daily Logger
+    col_log1, col_log2 = st.columns([2, 2])
+    with col_log1:
         st.markdown("#### ➕ Log Daily Scale Reading")
-        new_val = st.number_input("Scale Weight Reading (kg):", value=round(weights[-1] - 0.1, 1), step=0.1)
-        if st.button("Submit Daily Entry", use_container_width=True, type="primary"):
+        new_val = st.number_input("Today's Scale Weight (kg):", value=round(weights[-1] - 0.1, 1), step=0.1)
+        if st.button("Submit Entry", type="primary", use_container_width=True):
             st.session_state["weight_log"].append(round(new_val, 1))
-            st.success("Log entry saved!")
+            st.success("Log updated!")
             st.rerun()
 
-        st.write("")
+    with col_log2:
+        st.markdown("#### ⚡ Quick Preset Simulations")
         if st.button("Simulate Sodium Spike (Day 14)", use_container_width=True):
             base_w = prof["start_weight"]
             st.session_state["weight_log"] = [
@@ -269,35 +299,38 @@ with tab2:
             ]
             st.rerun()
 
-# ── STEP 3: LSTM TIME-SERIES FORECASTING ───────────────────────
+# ── STEP 3: DEEP LEARNING FORECASTING & PLATEAU ANALYSIS ───────
 with tab3:
     st.markdown("<span class='step-badge'>STEP 3 OF 5</span>", unsafe_allow_html=True)
     st.markdown("### Deep Learning (LSTM) 7-Day Trajectory Forecasting")
-    st.caption("A 2-layer LSTM model trained on 14-day sliding window sequences predicts non-linear future weight trajectories and detects metabolic slowdowns.")
+    st.caption("A 2-layer LSTM model predicts non-linear weight trajectories and plateau behavior.")
 
     lstm_pred = forecast_lstm(weights)
-    
-    col_fc1, col_fc2 = st.columns([2.5, 1.5])
-    with col_fc1:
+
+    g3, g4 = st.columns([2.5, 1.5])
+    with g3:
         if lstm_pred is not None:
-            fig_fc, ax_fc = plt.subplots(figsize=(7, 3.5), dpi=150)
-            fig_fc.patch.set_facecolor("#FFFFFF")
-            ax_fc.set_facecolor("#FAFAFA")
+            fig3, ax3 = plt.subplots(figsize=(7, 3.8), dpi=150)
+            fig3.patch.set_facecolor("#FFFFFF")
+            ax3.set_facecolor("#FAFAFA")
 
             days_hist = list(range(1, len(weights) + 1))
-            ax_fc.plot(days_hist, ml_output["smoothed"], color="#2563EB", linewidth=2.2, label="Historical EWMA Trend")
+            ax3.plot(days_hist, ml_output["smoothed"], color="#2563EB", linewidth=2.2, label="Historical EWMA Trend")
 
             future_days = list(range(len(weights) + 1, len(weights) + 8))
-            ax_fc.plot(future_days, lstm_pred, color="#16A34A", linestyle="-.", linewidth=2.2, marker="s", markersize=4, label="LSTM 7-Day Prediction")
+            ax3.plot(future_days, lstm_pred, color="#16A34A", linestyle="-.", linewidth=2.2, marker="s", markersize=4, label="7-Day LSTM Forecast")
 
-            ax_fc.set_title("7-Day Forecast Trajectory", fontsize=10, fontweight="bold")
-            ax_fc.set_xlabel("Day", fontsize=8.5)
-            ax_fc.set_ylabel("Weight (kg)", fontsize=8.5)
-            ax_fc.grid(True, linestyle=":", alpha=0.5)
-            ax_fc.legend(fontsize=8, loc="upper right")
-            st.pyplot(fig_fc)
+            # Uncertainty confidence band
+            ax3.fill_between(future_days, lstm_pred - 0.2, lstm_pred + 0.2, color="#16A34A", alpha=0.15, label="Forecast Confidence Interval")
 
-    with col_fc2:
+            ax3.set_title("Graph 3: LSTM 7-Day Predicted Trajectory", fontsize=10, fontweight="bold")
+            ax3.set_xlabel("Day", fontsize=8.5)
+            ax3.set_ylabel("Weight (kg)", fontsize=8.5)
+            ax3.grid(True, linestyle=":", alpha=0.5)
+            ax3.legend(fontsize=8, loc="upper right")
+            st.pyplot(fig3)
+
+    with g4:
         st.markdown("#### 🔮 Predicted 7-Day Values")
         if lstm_pred is not None:
             df_fc = pd.DataFrame({
@@ -312,7 +345,7 @@ with tab4:
     st.markdown("### Smart AI Health Coach (Intent-Aware & RAG Grounded)")
     st.caption("Ask specific questions about time to goal, daily calorie recommendations, water weight spikes, or medical guidelines.")
 
-    # Display Chat
+    # Display Chat Messages
     for msg in st.session_state["chat_history"]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -326,7 +359,7 @@ with tab4:
                             st.markdown(f"**Step {step['step']}: Tool Execution (`{step['tool_call']}`)**")
                             st.json(step["observation"])
 
-    # Sample Quick Prompt Buttons
+    # Sample Quick Prompts
     st.caption("💡 Quick Sample Questions:")
     cq1, cq2, cq3 = st.columns(3)
     p_selected = None
@@ -348,7 +381,7 @@ with tab4:
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing intent and running agent tools..."):
+            with st.spinner("Analyzing query intent and running tools..."):
                 agent_res = agent_coach.run_agent(
                     prof,
                     weights,
@@ -373,11 +406,11 @@ with tab4:
             "trace": agent_res["trace"]
         })
 
-# ── STEP 5: RESEARCH CALIBRATION (NHANES TEST) ─────────────────
+# ── STEP 5: RESEARCH METRICS & NHANES KS TEST ──────────────────
 with tab5:
     st.markdown("<span class='step-badge'>STEP 5 OF 5</span>", unsafe_allow_html=True)
-    st.markdown("### Research Calibration (CDC NHANES Kolmogorov-Smirnov Test)")
-    st.caption("Benchmarking synthetic user population against US CDC NHANES survey statistics to prove zero distribution bias.")
+    st.markdown("### Research Metrics (CDC NHANES Kolmogorov-Smirnov Test)")
+    st.caption("Validates synthetic user distributions against US CDC NHANES survey benchmarks using 2-sample KS tests.")
 
     if st.button("📊 Execute Kolmogorov-Smirnov Statistical Validation", type="primary"):
         with st.spinner("Calculating 2-Sample KS Tests against CDC NHANES dataset..."):
