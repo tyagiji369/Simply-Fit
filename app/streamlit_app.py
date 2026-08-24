@@ -206,11 +206,23 @@ with st.sidebar:
         "Gemini API Key (Optional):",
         type="password",
         value=default_key,
-        help="Paste a free Google Gemini API key from https://aistudio.google.com — or set it as a "
-             "GEMINI_API_KEY environment variable / Streamlit Cloud secret — to enable real LLM coaching."
+        help="Paste a Google Gemini API key from https://aistudio.google.com (AIza… standard or AQ.Ab… "
+             "auth keys both work) — or set it as a GEMINI_API_KEY environment variable / Streamlit "
+             "Cloud secret — to enable real LLM coaching."
     )
     if gemini_key_input:
         st.session_state["gemini_api_key"] = gemini_key_input
+
+    # Show where the key is coming from so the (de)activation is visible.
+    _key_source = (
+        "env / Streamlit secret" if (os.getenv("GEMINI_API_KEY") or streamlit_secret())
+        else "sidebar input" if gemini_key_input and "gemini_api_key" in st.session_state
+        else None
+    )
+    if _key_source:
+        st.caption(f"✅ Gemini key detected ({_key_source}) — live coaching enabled")
+    else:
+        st.caption("ℹ️ No Gemini key found — coach answers with the built-in engine")
 
 # ═══════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -521,6 +533,9 @@ def get_coach_response(profile, weight_log, question, target_weekly):
             prof_dict, weight_log, question,
             target_weekly_change=target_weekly, gemini_api_key=api_key or None
         )
+        # Remember how the answer was produced, so the UI can label it.
+        st.session_state["coach_used_llm"] = bool(res.get("used_llm"))
+        st.session_state["coach_llm_error"] = res.get("llm_error")
         return res["response"]
     except Exception:
         recent = weight_log[-7:]
@@ -927,6 +942,12 @@ elif st.session_state.page == "tracker":
                     f'<div class="coach-box">{response}</div>',
                     unsafe_allow_html=True
                 )
+                if st.session_state.get("coach_used_llm"):
+                    st.caption("✅ Answered with Gemini (live API)")
+                elif st.session_state.get("coach_llm_error"):
+                    st.caption(f"⚠️ Gemini attempt failed ({st.session_state['coach_llm_error'][:120]}) — answered with the built-in engine")
+                else:
+                    st.caption("ℹ️ No Gemini key configured — answered with the built-in engine")
 
     elif n > 0:
         alert(f"Log {7 - n} more reading(s) to unlock ML insights and coaching.", "info")
@@ -1134,6 +1155,12 @@ elif st.session_state.page == "report":
                 f'<div class="coach-box">{response}</div>',
                 unsafe_allow_html=True
             )
+            if st.session_state.get("coach_used_llm"):
+                st.caption("✅ Answered with Gemini (live API)")
+            elif st.session_state.get("coach_llm_error"):
+                st.caption(f"⚠️ Gemini attempt failed ({st.session_state['coach_llm_error'][:120]}) — answered with the built-in engine")
+            else:
+                st.caption("ℹ️ No Gemini key configured — answered with the built-in engine")
 
     # Health status
     slabel("Current health status")

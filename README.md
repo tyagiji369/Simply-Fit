@@ -33,11 +33,15 @@ Food logging is the standard approach in most diet apps, but people abandon it w
 
 The coach uses the Google Gemini API when a key is available, and falls back to a deterministic answer built from the same metrics otherwise.
 
+> **Key formats:** Google currently issues two kinds of Gemini API key — legacy Standard keys (`AIza…`) and the new Auth keys (`AQ.Ab…`) that AI Studio now creates by default. Both work with this project (the official `google-genai` SDK handles both via the native `x-goog-api-key` header).
+
 Add the key in **any one** of these ways:
 
 1. **Streamlit Cloud (recommended for the deployed app):** Settings → Secrets → add `GEMINI_API_KEY = "..."`.
 2. **Local:** copy `.env.example` to `.env` and paste the key from https://aistudio.google.com.
 3. **In-app:** paste it in the sidebar ("API Settings") at runtime.
+
+The coach box labels its source after every answer: **"✅ Answered with Gemini (live API)"** when the key works, or a warning with the exact API error when it doesn't. `scripts/verify_coach.py` does the same check from the terminal.
 
 ## Repo layout
 

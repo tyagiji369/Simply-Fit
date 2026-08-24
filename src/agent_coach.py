@@ -209,11 +209,14 @@ class SimplyFitAgent:
 
         api_key = gemini_api_key or os.getenv("GEMINI_API_KEY")
         response_text = None
+        llm_error = None
         used_llm = False
         if api_key:
-            response_text = self._llm_answer(api_key, profile, question, current_weight,
-                                             ml_res, forecast_res, rag_res, plateau_res,
-                                             intent_info, disease)
+            response_text, llm_error = self._llm_answer(
+                api_key, profile, question, current_weight,
+                ml_res, forecast_res, rag_res, plateau_res,
+                intent_info, disease,
+            )
             used_llm = response_text is not None
         if response_text is None:
             response_text = self._smart_intent_synthesis(
@@ -228,15 +231,24 @@ class SimplyFitAgent:
             "forecast": forecast_res,
             "intent": intent_info,
             "used_llm": used_llm,
+            "llm_error": llm_error,
         }
 
     # ── LLM answer (real API) ─────────────────────────────────
     def _llm_answer(self, api_key, profile, question, current_weight, ml_res,
                     forecast_res, rag_res, plateau_res, intent_info, disease):
+        """
+        Calls Gemini via the official google-genai SDK.
+
+        Returns (response_text, error). Google currently issues two key
+        formats — legacy Standard keys (``AIza…``) and the new Auth keys
+        (``AQ.Ab…``); the SDK sends both via the native
+        ``x-goog-api-key`` header, so no special handling is needed.
+        """
         try:
             from google import genai
         except ImportError:
-            return None
+            return None, "google-genai package is not installed"
 
         payload = json.dumps({
             "question": question,
@@ -272,11 +284,10 @@ class SimplyFitAgent:
                     contents=f"{system}\n\nQuestion: {question}",
                 )
                 if res and getattr(res, "text", None):
-                    return res.text.strip()
+                    return res.text.strip(), None
             except Exception as e:  # noqa: BLE001 - try next model
                 last_error = e
-        print(f"[coach] Gemini unavailable ({last_error}); using deterministic synthesis.")
-        return None
+        return None, f"{type(last_error).__name__}: {last_error}" if last_error else "No model returned a response"
 
     # ── Deterministic synthesis ───────────────────────────────
     def _smart_intent_synthesis(self, intent_info, question, current_weight, ml_res,
