@@ -1,3 +1,11 @@
+"""
+Lightweight, deterministic retrieval layer for the clinical guidelines.
+
+Uses TF-IDF + cosine similarity (appropriate for a small, curated corpus).
+When a user condition is provided, condition-matched guidelines are
+preferred and only similarity *ranks* within them — so a CKD user never
+gets a generic sodium recommendation instead of the renal-specific one.
+"""
 import json
 import os
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -6,9 +14,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 class ClinicalRAGPipeline:
     """
-    Lightweight, deterministic Vector Retrieval-Augmented Generation (RAG)
-    engine over evidence-based medical nutrition therapy guidelines.
-    Uses TF-IDF term-frequency embeddings and Cosine Similarity.
+    Deterministic vector retrieval over the clinical guideline corpus.
     """
 
     def __init__(self, guidelines_path="data/public/clinical_guidelines.json"):
@@ -18,69 +24,86 @@ class ClinicalRAGPipeline:
         self.tfidf_matrix = None
         self._load_and_index()
 
+    def _resolve_path(self):
+        candidates = [
+            self.guidelines_path,
+            os.path.join(os.path.dirname(__file__), "..", "data", "public", "clinical_guidelines.json"),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        return self.guidelines_path
+
     def _load_and_index(self):
-        if not os.path.exists(self.guidelines_path):
-            # Fallback path if run from root vs app dir
-            alt_path = os.path.join(
-                os.path.dirname(__file__), "..", "data", "public", "clinical_guidelines.json"
-            )
-            if os.path.exists(alt_path):
-                self.guidelines_path = alt_path
+        path = self._resolve_path()
+        if not os.path.exists(path):
+            return
+        with open(path, "r") as f:
+            self.guidelines = json.load(f)
 
-        if os.path.exists(self.guidelines_path):
-            with open(self.guidelines_path, "r") as f:
-                self.guidelines = json.load(f)
-
-            # Build text corpus for embedding vectorization
-            corpus = [
-                f"{g['condition']} {g['topic']} {g['recommendation']} {g['source']}"
-                for g in self.guidelines
-            ]
-            if corpus:
-                self.tfidf_matrix = self.vectorizer.fit_transform(corpus)
+        corpus = [
+            f"{g['condition']} {g['topic']} {g['recommendation']} {g['source']}"
+            for g in self.guidelines
+        ]
+        if corpus:
+            self.tfidf_matrix = self.vectorizer.fit_transform(corpus)
 
     def search_guidelines(self, query, condition=None, top_k=2):
         """
-        Retrieves top_k clinical guidelines most relevant to query & condition.
-        Returns list of matched guideline dicts with similarity scores.
+        Returns the top_k most relevant guidelines.
+
+        If ``condition`` matches any guideline, retrieval is restricted to
+        that condition first (ranked by similarity); otherwise it falls
+        back to the full corpus.
         """
         if not self.guidelines or self.tfidf_matrix is None:
             return []
 
-        # Enhance query with condition if provided
-        search_text = f"{condition or ''} {query}"
-        query_vec = self.vectorizer.transform([search_text])
-        similarities = cosine_similarity(query_vec, self.tfidf_matrix).flatten()
+        # Normalise condition matching: "Type 2 Diabetes" vs "Diabetes".
+        def _norm(s):
+            return str(s).lower().replace("type 2 ", "").strip()
 
-        # Get top-k indices
-        top_indices = similarities.argsort()[::-1][:top_k]
+        if condition:
+            filtered = [
+                (i, g) for i, g in enumerate(self.guidelines)
+                if _norm(g["condition"]) in _norm(condition)
+                or _norm(condition) in _norm(g["condition"])
+            ]
+        else:
+            filtered = [(i, g) for i, g in enumerate(self.guidelines)]
 
+        if filtered:
+            indices = [i for i, _ in filtered]
+        else:
+            indices = list(range(len(self.guidelines)))
+
+        sub_matrix = self.tfidf_matrix[indices]
+        query_vec = self.vectorizer.transform([f"{condition or ''} {query}"])
+        similarities = cosine_similarity(query_vec, sub_matrix).flatten()
+
+        order = similarities.argsort()[::-1][:top_k]
         results = []
-        for idx in top_indices:
-            score = float(similarities[idx])
-            g = self.guidelines[idx].copy()
+        for pos in order:
+            idx = indices[pos]
+            score = float(similarities[pos])
+            g = dict(self.guidelines[idx])
             g["relevance_score"] = round(score, 3)
             results.append(g)
-
         return results
 
     def format_retrieved_context(self, query, condition=None, top_k=2):
-        """
-        Formats retrieved guidelines into a clean context string for LLM grounding.
-        """
         matches = self.search_guidelines(query, condition, top_k=top_k)
         if not matches:
             return "No specific medical guidelines retrieved."
 
-        formatted_chunks = []
+        chunks = []
         for i, m in enumerate(matches, 1):
-            formatted_chunks.append(
+            chunks.append(
                 f"[Clinical Guideline {i} - {m['condition']} ({m['source']})]\n"
                 f"Topic: {m['topic']}\n"
                 f"Recommendation: {m['recommendation']}"
             )
-
-        return "\n\n".join(formatted_chunks)
+        return "\n\n".join(chunks)
 
 
 # Global singleton instance for easy import

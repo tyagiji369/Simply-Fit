@@ -1,7 +1,12 @@
+# Local / cache
 venv/
+.venv/
 __pycache__/
 *.pyc
-.env
 .ipynb_checkpoints/
-data/public/
-*.h5
+
+# Secrets — never commit
+.env
+
+# Notebook outputs clutter
+.ipynb_checkpoints/

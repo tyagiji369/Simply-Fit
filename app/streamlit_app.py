@@ -12,8 +12,6 @@ import matplotlib.ticker as ticker
 import numpy as np
 import random
 from datetime import datetime, timedelta
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import IsolationForest
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -22,6 +20,17 @@ load_dotenv()
 from src.agent_coach import agent_coach
 from src.rag_pipeline import rag_engine
 from src.calibration import run_nhanes_calibration_test
+from src.ml_engine import KCAL_PER_KG, run_pipeline as ml_pipeline
+from src.lstm_forecaster import forecast as lstm_forecast, SEQUENCE_LENGTH
+
+
+def streamlit_secret(key="GEMINI_API_KEY"):
+    """Reads a Streamlit Cloud secret without crashing locally."""
+    try:
+        return st.secrets.get(key, "")
+    except Exception:
+        return ""
+
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -192,11 +201,13 @@ div[data-testid="column"]:first-child .stButton > button {
 # Sidebar for Gemini API Key setup
 with st.sidebar:
     st.markdown("### 🔑 API Settings")
+    default_key = os.getenv("GEMINI_API_KEY", "") or streamlit_secret()
     gemini_key_input = st.text_input(
         "Gemini API Key (Optional):",
         type="password",
-        value=os.getenv("GEMINI_API_KEY", ""),
-        help="Paste a free Google Gemini API key from https://aistudio.google.com to enable real-time Gemini LLM coaching."
+        value=default_key,
+        help="Paste a free Google Gemini API key from https://aistudio.google.com — or set it as a "
+             "GEMINI_API_KEY environment variable / Streamlit Cloud secret — to enable real LLM coaching."
     )
     if gemini_key_input:
         st.session_state["gemini_api_key"] = gemini_key_input
@@ -207,7 +218,6 @@ with st.sidebar:
 PAGES      = ["profile", "metrics", "goal", "target", "baseline", "tracker", "report"]
 TOTAL      = len(PAGES)
 PAGE_NAMES = ["Profile", "Metrics", "Goal", "Target", "Baseline", "Tracker", "Report"]
-KCAL_PER_KG = 7700
 
 ACTIVITY_MULT = {
     "Sedentary (desk job, little exercise)": 1.2,
@@ -398,25 +408,15 @@ def bmi_cat(bmi):
     elif bmi < 30.0: return "Overweight", "p-yellow", "amber"
     else:            return "Obese", "p-red", "red"
 
-def ewma(arr, span=7):
-    return pd.Series(arr).ewm(span=span, adjust=False).mean().values
+def detect_anomalies(log, **kwargs):
+    """Thin wrapper — single source of truth is src.ml_engine."""
+    res = ml_pipeline(log, **kwargs)
+    return res["anomaly_flags"], res["smoothed"]
 
-def detect_anomalies(log):
-    smoothed  = ewma(log)
-    residuals = np.array(log) - smoothed
-    iso       = IsolationForest(contamination=0.1, random_state=42)
-    flags     = iso.fit_predict(residuals.reshape(-1, 1)) == -1
-    return flags, smoothed
-
-def estimate_balance(log):
-    flags, smoothed = detect_anomalies(log)
-    clean           = np.where(flags, smoothed, log)
-    days            = np.arange(len(clean)).reshape(-1, 1)
-    m               = LinearRegression().fit(days, clean)
-    kg_per_day      = m.coef_[0]
-    kcal_per_day    = kg_per_day * KCAL_PER_KG
-    r2              = round(m.score(days, clean), 2)
-    return kcal_per_day, kg_per_day * 7, r2
+def estimate_balance(log, **kwargs):
+    """Thin wrapper — single source of truth is src.ml_engine."""
+    res = ml_pipeline(log, **kwargs)
+    return (res["kcal_per_day"], res["weekly_kg_change"], res["r_squared"], res)
 
 def smart_ylim(vals, pad=0.2):
     lo, hi = min(vals), max(vals)
@@ -444,33 +444,121 @@ def chart_wrap(lbl=""):
 def chart_end():
     st.markdown('</div>', unsafe_allow_html=True)
 
+def render_forecast_chart(weight_log, chart_title=None):
+    """
+    Renders the last 14 readings plus the 7-day forecast (LSTM when
+    available, linear extrapolation otherwise).
+    """
+    if len(weight_log) < SEQUENCE_LENGTH:
+        return None
+    fc = lstm_forecast(weight_log)
+    if fc is None:
+        return None
+
+    method = "LSTM model" if fc["method"] == "lstm" else "linear extrapolation (fallback)"
+    chart_wrap(chart_title or f"7-day forecast — {method}")
+    fig_f, ax_f = make_fig(7, 2.6)
+    hist = weight_log[-14:]
+    n_hist = len(hist)
+    x_hist = np.arange(1, n_hist + 1)
+    x_fc = np.arange(n_hist, n_hist + len(fc["values"]) + 1)
+    y_all = list(hist) + [hist[-1]] + list(fc["values"])
+    ylo, yhi = smart_ylim(y_all)
+
+    ax_f.plot(x_hist, hist, color="#1A1A1A", linewidth=2.0,
+              marker="o", markersize=4, label="History (last 14 d)", zorder=4)
+    ax_f.plot(x_fc, [hist[-1]] + list(fc["values"]), color="#2D6A4F", linewidth=2.2,
+              linestyle="--", marker="o", markersize=4, label="Forecast", zorder=5)
+    ax_f.axvline(n_hist, color="#E4E0D8", linewidth=1.0, zorder=1)
+    ax_f.set_ylim(ylo, yhi)
+    ax_f.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.1f"))
+    ax_f.set_xlabel("Day ahead", fontsize=8.5)
+    ax_f.set_ylabel("Weight (kg)", fontsize=8.5)
+    ax_f.legend(loc="best")
+    plt.tight_layout()
+    st.pyplot(fig_f, width="stretch")
+    plt.close()
+    chart_end()
+    return fc
+
 def get_coach_response(profile, weight_log, question, target_weekly):
+    """
+    Builds the full user profile for the coach and calls it once.
+
+    ``target_weekly`` is a weekly rate in kg/week (already converted by the
+    caller). ``target_weight`` is the absolute goal weight — the agent's
+    time-to-goal math depends on it being an absolute kg value.
+    """
     try:
+        goal = st.session_state.get("goal", "lose")
+        start_w = float(st.session_state.get("weight", 78.0))
+        change = float(st.session_state.get("target_change", 5.0))
+        if goal == "maintain":
+            goal_weight = start_w
+        elif goal == "gain":
+            goal_weight = start_w + change
+        else:
+            goal_weight = start_w - change
+
+        diseases = profile.get("diseases", []) or []
         prof_dict = {
-            "disease": profile.get("diseases", ["None"])[0] if profile.get("diseases") else "None",
-            "target_weight": st.session_state.get("target_change", 5.0),
-            "tdee": st.session_state.get("tdee", 2200)
+            "age": st.session_state.get("age", 28),
+            "gender": st.session_state.get("gender", "male"),
+            "height_cm": st.session_state.get("height", 175.0),
+            "weight": start_w,
+            "goal": goal,
+            "disease": diseases[0] if diseases else None,
+            "diseases": diseases,
+            "target_weight": round(goal_weight, 1),
+            "tdee": st.session_state.get("tdee", 2200),
         }
-        target_rate = (target_weekly * KCAL_PER_KG) / 7.0 if abs(target_weekly) > 10 else target_weekly
-        api_key = st.session_state.get("gemini_api_key") or os.getenv("GEMINI_API_KEY")
-        res = agent_coach.run_agent(prof_dict, weight_log, question, target_rate, gemini_api_key=api_key)
+        api_key = (
+            st.session_state.get("gemini_api_key")
+            or os.getenv("GEMINI_API_KEY")
+            or streamlit_secret()
+        )
+        res = agent_coach.run_agent(
+            prof_dict, weight_log, question,
+            target_weekly_change=target_weekly, gemini_api_key=api_key or None
+        )
         return res["response"]
-    except Exception as e:
+    except Exception:
         recent = weight_log[-7:]
         weekly_change = round(recent[-1] - recent[0], 2)
-        return f"Your 7-day trend shows {weekly_change:+.2f} kg change. (Calculated daily balance: {(weekly_change*7700)/7:+.0f} kcal/day)."
+        return (f"Your 7-day trend shows {weekly_change:+.2f} kg change "
+                f"(approx. {(weekly_change * 7700) / 7:+.0f} kcal/day, "
+                f"treat as an estimate ±150 kcal).")
 
 def render_meal_plan(goal, tdee, target):
+    """
+    Sample menu, scaled to the user's actual calorie target.
+
+    The base recipes are fixed; the displayed kcal are scaled by
+    target / base_total so the plan always adds up to the recommended
+    intake instead of silently showing a 1170 kcal plan under a
+    1815 kcal label.
+    """
     plan = MEAL_PLANS.get(goal, MEAL_PLANS["lose"])
+    base_total = sum(kcal for items in plan.values() for _, _, kcal in items)
     rec_target = int(tdee + target)
-    slabel(f"Suggested daily meal plan (~{rec_target} kcal target)")
+    factor = rec_target / base_total if base_total else 1.0
+
+    slabel(f"Suggested daily meal plan — {rec_target} kcal target "
+           f"(sample scaled ×{factor:.2f})")
+    st.markdown(
+        '<div class="alert a-info">Portions below are a template scaled to your '
+        'target. Adjust to your preferences, and follow renal/heart-specific '
+        'guidance from your clinician where applicable.</div>',
+        unsafe_allow_html=True,
+    )
 
     for meal_name, items in plan.items():
         st.markdown(f'<div class="meal-card"><div class="meal-head">{meal_name}</div>', unsafe_allow_html=True)
         items_html = ""
         for name, qty, kcal in items:
+            scaled = int(round(kcal * factor / 5) * 5)
             items_html += (f'<div class="meal-item"><span>{name}<span class="meal-qty">({qty})</span></span>'
-                           f'<span class="meal-kcal">{kcal} kcal</span></div>')
+                           f'<span class="meal-kcal">{scaled} kcal</span></div>')
         st.markdown(items_html, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -580,7 +668,7 @@ elif st.session_state.page == "metrics":
     ax_b.set_xticklabels(["18.5", "25", "30"]); ax_b.grid(False)
     for sp in ax_b.spines.values(): sp.set_visible(False)
     plt.tight_layout(pad=0.3)
-    st.pyplot(fig_b, use_container_width=True)
+    st.pyplot(fig_b, width="stretch")
     plt.close()
     chart_end()
 
@@ -739,14 +827,19 @@ elif st.session_state.page == "tracker":
                                 value=float(log[-1]), step=0.1, format="%.1f")
     with col_i2:
         st.write("")
-        if st.button("Add entry", use_container_width=True):
+        if st.button("Add entry", width="stretch"):
             st.session_state.weight_log.append(round(new_w, 1))
             st.rerun()
 
     if n >= 7:
-        flags, smoothed             = detect_anomalies(log)
-        kcal_balance, weekly_kg, r2 = estimate_balance(log)
-        target_weekly        = (target * 7) / KCAL_PER_KG
+        target_weekly = (target * 7) / KCAL_PER_KG
+        res = ml_pipeline(log, target_weekly_change=target_weekly)
+        flags = res["anomaly_flags"]
+        smoothed = res["smoothed"]
+        kcal_balance = res["kcal_per_day"]
+        weekly_kg = res["weekly_kg_change"]
+        r2 = res["r_squared"]
+        ci = res["ci_95_kcal_per_day"]
 
         slabel("ML pipeline output")
         st.markdown(f"""
@@ -759,17 +852,17 @@ elif st.session_state.page == "tracker":
           <div class="card dark">
             <div class="c-lbl">Inferred balance</div>
             <div class="c-val">{int(kcal_balance):+d}<span class="c-unit">kcal</span></div>
-            <div class="c-sub">From weight trend — no food log needed</div>
+            <div class="c-sub">±{int(ci)} kcal (95% CI) · no food log needed</div>
           </div>
           <div class="card">
             <div class="c-lbl">Weekly rate</div>
             <div class="c-val">{weekly_kg:+.2f}<span class="c-unit">kg/w</span></div>
-            <div class="c-sub">Personal regression R²={r2}</div>
+            <div class="c-sub">R²={r2} · 28-day: {res['weekly_kg_change_28d']:+.3f} kg/w</div>
           </div>
           <div class="card {"green" if flags.sum()==0 else "amber"}">
             <div class="c-lbl">Anomalies</div>
             <div class="c-val">{int(flags.sum())}</div>
-            <div class="c-sub">Noisy readings filtered out</div>
+            <div class="c-sub">Filtered ({res['anomaly_method'].replace('_', ' ')})</div>
           </div>
         </div>
         """, unsafe_allow_html=True)
@@ -790,8 +883,9 @@ elif st.session_state.page == "tracker":
 
         if flags.sum() > 0:
             alert(
-                f"{int(flags.sum())} anomalous reading(s) detected by Isolation Forest "
-                f"and filtered from calorie calculations. These are likely water retention spikes.",
+                f"{int(flags.sum())} anomalous reading(s) detected ({res['anomaly_method'].replace('_', ' ')}) "
+                f"and excluded from the calorie estimate. These are most likely water-retention spikes; "
+                f"the rest of the trend is unchanged.",
                 "neutral"
             )
 
@@ -815,14 +909,16 @@ elif st.session_state.page == "tracker":
         ax_t.set_ylabel("Weight (kg)", fontsize=8.5)
         ax_t.legend(loc="best")
         plt.tight_layout()
-        st.pyplot(fig_t, use_container_width=True)
+        st.pyplot(fig_t, width="stretch")
         plt.close()
         chart_end()
+
+        render_forecast_chart(log)
 
         slabel("Ask your coach")
         question = st.text_input("Ask anything about your progress...",
                                  placeholder="Why is my weight fluctuating?")
-        if st.button("Ask coach", use_container_width=True):
+        if st.button("Ask coach", width="stretch"):
             if question.strip():
                 response = get_coach_response(
                     {"diseases": st.session_state.diseases}, log, question, target_weekly
@@ -859,8 +955,13 @@ elif st.session_state.page == "report":
     w_kg     = st.session_state.weight
     tdee     = st.session_state.tdee
 
-    flags, smoothed             = detect_anomalies(log)
-    kcal_balance, weekly_kg, r2 = estimate_balance(log)
+    res = ml_pipeline(log, target_weekly_change=(target * 7) / KCAL_PER_KG)
+    flags = res["anomaly_flags"]
+    smoothed = res["smoothed"]
+    kcal_balance = res["kcal_per_day"]
+    weekly_kg = res["weekly_kg_change"]
+    r2 = res["r_squared"]
+    ci = res["ci_95_kcal_per_day"]
 
     days = list(range(1, len(log)+1))
     z    = np.polyfit(days, log, 1)
@@ -891,7 +992,7 @@ elif st.session_state.page == "report":
         <div class="c-sub">Over {len(log)} days</div></div>
       <div class="card dark"><div class="c-lbl">Inferred balance</div>
         <div class="c-val">{int(kcal_balance):+d}<span class="c-unit">kcal</span></div>
-        <div class="c-sub">No food log needed</div></div>
+        <div class="c-sub">±{int(ci)} kcal (95% CI) · no food log needed</div></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -919,9 +1020,20 @@ elif st.session_state.page == "report":
     ax1.set_ylabel("Weight (kg)", fontsize=8.5)
     ax1.legend(loc="best")
     plt.tight_layout()
-    st.pyplot(fig1, use_container_width=True)
+    st.pyplot(fig1, width="stretch")
     plt.close()
     chart_end()
+
+    # 7-day forecast (LSTM when available)
+    slabel("Forecast")
+    render_forecast_chart(log, "Next 7 days — LSTM forecast vs linear baseline fallback")
+
+    if res["kcal_per_day_28d"] and abs(res["kcal_per_day_28d"] - kcal_balance) > 100:
+        alert(
+            f"Recent 28-day estimate ({res['kcal_per_day_28d']:+.0f} kcal/day) differs from the "
+            f"full-trend estimate ({kcal_balance:+.0f} kcal/day) — the balance is changing over time.",
+            "info"
+        )
 
     # Calorie balance chart
     slabel("Inferred daily calorie balance")
@@ -950,7 +1062,7 @@ elif st.session_state.page == "report":
         ax2.set_xlabel("Day", fontsize=8.5)
         ax2.set_ylabel("kcal / day", fontsize=8.5)
         plt.tight_layout()
-        st.pyplot(fig2, use_container_width=True)
+        st.pyplot(fig2, width="stretch")
         plt.close()
         chart_end()
 
@@ -989,7 +1101,7 @@ elif st.session_state.page == "report":
         ax3.set_ylabel("Weight (kg)", fontsize=8.5)
         ax3.legend(loc="best")
         plt.tight_layout()
-        st.pyplot(fig3, use_container_width=True)
+        st.pyplot(fig3, width="stretch")
         plt.close()
         chart_end()
 
@@ -1013,7 +1125,7 @@ elif st.session_state.page == "report":
     slabel("Ask your AI coach")
     question_rep = st.text_input("Ask anything about your progress or timeline...",
                                  placeholder="How much time will it take to achieve my goal?")
-    if st.button("Ask AI coach", use_container_width=True):
+    if st.button("Ask AI coach", width="stretch"):
         if question_rep.strip():
             response = get_coach_response(
                 {"diseases": diseases}, log, question_rep, (target * 7) / KCAL_PER_KG
@@ -1057,16 +1169,39 @@ elif st.session_state.page == "report":
     # Meal plan
     render_meal_plan(goal, tdee, target)
 
-    # Recommendations
+    # Recommendations — safe defaults, adjusted when the profile has
+    # conditions that make a generic recommendation wrong (e.g. CKD).
     slabel("General recommendations")
+    cond_lower = [d.lower() for d in diseases]
+    has_ckd = any(("ckd" in c or "kidney" in c) for c in cond_lower)
+    has_renal_or_heart = has_ckd or any("hypertension" in c for c in cond_lower)
+
     recs = [
         ("Weigh yourself at the same time every morning — before eating, after bathroom. Consistency matters more than the exact time.", False),
-        (f"Target protein at 1.6–2.0 g per kg — roughly {int(1.8 * w_kg)} g/day — to preserve muscle regardless of your goal.", False),
         ("7–9 hours of sleep is essential. Sleep deficit raises hunger hormones and impairs fat loss even with the same calorie intake.", False),
         ("150 minutes of moderate aerobic activity per week is the minimum evidence-backed recommendation for metabolic health.", False),
         ("Limit ultra-processed foods — they are engineered to override satiety signals and are the primary driver of unintended weight gain.", False),
-        (f"Drink roughly {int(35 * w_kg)} ml of water per day ({int(35 * w_kg / 250)} glasses). Thirst is frequently misread as hunger.", False),
     ]
+    if has_ckd:
+        recs.append((
+            "<strong>Kidney condition:</strong> protein intake must be individualised — non-dialysis CKD "
+            "guidelines typically target 0.6–0.8 g/kg/day (KDOQI), the opposite of the general 1.6–2.0 g/kg "
+            "recommendation. Confirm your target with your nephrologist.", True))
+        recs.append((
+            "<strong>Fluid:</strong> fluid targets may be restricted in CKD — follow your clinician's "
+            "fluid advice rather than a fixed daily volume.", True))
+    else:
+        recs.append((
+            f"Target protein at 1.6–2.0 g per kg — roughly {int(1.8 * w_kg)} g/day — to preserve muscle "
+            "regardless of your goal. <em>(Not applicable if a kidney condition is selected.)</em>", False))
+    if has_renal_or_heart:
+        recs.append((
+            f"Daily fluid around {int(35 * w_kg)} ml is a general guideline; confirm with your clinician "
+            "if you have hypertension, heart or kidney disease.", False))
+    else:
+        recs.append((
+            f"Drink roughly {int(35 * w_kg)} ml of water per day ({int(35 * w_kg / 250)} glasses). "
+            "Thirst is frequently misread as hunger.", False))
 
     # Clinical Vector RAG Guidelines Insertion
     if diseases:
@@ -1082,19 +1217,65 @@ elif st.session_state.page == "report":
                       f'<span>{text}</span></div>')
     st.markdown(recs_html, unsafe_allow_html=True)
 
-    # Model Insights & NHANES Calibration Expander
-    slabel("Model Insights & Data Realism")
-    with st.expander("🔬 View CDC NHANES Statistical Validation (Kolmogorov-Smirnov Test)"):
-        if st.button("Run KS Test Calibration", key="ks_test_report_orig"):
-            ks_res = run_nhanes_calibration_test(n_users=500)
-            st.write(f"• **Weight KS Improvement:** +{ks_res['weight_ks_improvement_pct']}% (KS Stat: {ks_res['weight_ks_before']} ➔ {ks_res['weight_ks_after']})")
-            st.write(f"• **Age KS Improvement:** +{ks_res['age_ks_improvement_pct']}% (KS Stat: {ks_res['age_ks_before']} ➔ {ks_res['age_ks_after']})")
-            st.write(f"• **Synthetic Mean Weight:** {ks_res['mean_synthetic_weight']} kg vs NHANES Benchmark: {ks_res['mean_nhanes_weight']} kg")
+    # Model Insights & NHANES Validation Expander — honest framing
+    slabel("Model Insights & Data Validation")
+    with st.expander("🔬 Validation: synthetic data vs real NHANES sample (KS test)"):
+        st.write(
+            "The generator is checked against a **real** NHANES sample shipped in the repo "
+            "(`data/public/nhanes_reference.csv`, 7,481 adults, cycles 2009–10 & 2011–12). "
+            "A smaller KS statistic = closer distributions."
+        )
+        if st.button("Run validation check", key="ks_test_report_orig"):
+            try:
+                ks_res = run_nhanes_calibration_test(n_users=500)
+                st.write(
+                    f"• **Weight KS:** {ks_res['weight_ks_before']} → {ks_res['weight_ks_after']} "
+                    f"({ks_res['weight_ks_improvement_pct']}% improvement, p={ks_res['weight_p_value']:.4f})"
+                )
+                st.write(
+                    f"• **Age KS:** {ks_res['age_ks_before']} → {ks_res['age_ks_after']} "
+                    f"({ks_res['age_ks_improvement_pct']}% improvement, p={ks_res['age_p_value']:.4f})"
+                )
+                st.write(
+                    f"• **Means:** synthetic {ks_res['mean_synthetic_weight']} kg / "
+                    f"{ks_res['mean_synthetic_age']} yrs vs NHANES "
+                    f"{ks_res['mean_reference_weight']} kg / {ks_res['mean_reference_age']} yrs "
+                    f"({ks_res['n_reference']} reference adults)."
+                )
+                if ks_res["distributions_still_significantly_different"]:
+                    st.warning(
+                        "p < 0.05 — the distributions are now *closer*, but still statistically "
+                        "different. That is stated honestly: calibration reduced bias, it did not "
+                        "eliminate it."
+                    )
+                else:
+                    st.success("No statistically significant difference detected.")
+            except FileNotFoundError as e:
+                st.error(str(e))
+
+    with st.expander("🤖 LSTM forecast: does it beat the linear baseline?"):
+        import json as _json
+        _path = os.path.join(ROOT_DIR, "data", "synthetic", "lstm_evaluation.json")
+        if os.path.exists(_path):
+            with open(_path) as _f:
+                _m = _json.load(_f)
+            st.write(
+                f"• **LSTM MAE:** {_m['mae_lstm_kg']:.3f} kg over the last 7 days "
+                f"({_m['n_users']} held-out users)"
+            )
+            st.write(f"• **Linear baseline MAE:** {_m['mae_linear_kg']:.3f} kg")
+            st.write(f"• **Improvement:** {_m['improvement_pct_vs_linear']:+.1f}% vs linear")
+            st.caption(_m.get("note", ""))
+        else:
+            st.write(
+                "No evaluation file found. Run `python scripts/retrain_and_evaluate.py` to train "
+                "and compare the LSTM against the linear baseline."
+            )
 
     divider()
     _, col_r = st.columns([1, 1])
     with col_r:
-        if st.button("Start over", use_container_width=True):
+        if st.button("Start over", width="stretch"):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
             st.rerun()

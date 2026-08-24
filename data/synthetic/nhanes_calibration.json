@@ -1,0 +1,17 @@
+{
+  "n_users": 500,
+  "n_reference": 7420,
+  "weight_ks_before": 0.185,
+  "weight_ks_after": 0.0649,
+  "weight_ks_improvement_pct": 64.9,
+  "weight_p_value": 0.036656894700095415,
+  "age_ks_before": 0.2831,
+  "age_ks_after": 0.044,
+  "age_ks_improvement_pct": 84.5,
+  "age_p_value": 0.31452653260995983,
+  "mean_synthetic_weight": 79.6,
+  "mean_reference_weight": 82.0,
+  "mean_synthetic_age": 45.7,
+  "mean_reference_age": 46.2,
+  "distributions_still_significantly_different": true
+}

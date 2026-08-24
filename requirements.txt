@@ -1,6 +1,9 @@
-streamlit
+streamlit>=1.32
 matplotlib
 numpy
 pandas
+scipy
 scikit-learn
+tensorflow
+google-genai
 python-dotenv

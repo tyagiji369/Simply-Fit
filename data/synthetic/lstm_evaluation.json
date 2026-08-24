@@ -1,0 +1,7 @@
+{
+  "n_users": 500,
+  "mae_lstm_kg": 0.3747,
+  "mae_linear_kg": 0.664,
+  "improvement_pct_vs_linear": 43.57,
+  "note": "Last-7-days forecast from first (N-7) days, per user. Lower MAE is better."
+}
