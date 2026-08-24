@@ -13,9 +13,9 @@ load_dotenv()
 
 class SimplyFitAgent:
     """
-    Intelligent AI Coach for Simply-Fit.
+    Intelligent Conversational AI Coach for Simply-Fit.
     Supports intent classification, dynamic calculations (time to goal, calorie targets,
-    water retention, medical RAG), Google Gemini API, and smart fallback synthesis.
+    water retention, medical RAG), Google Gemini API, and smart conversational synthesis.
     """
 
     def __init__(self):
@@ -56,13 +56,13 @@ class SimplyFitAgent:
             "recommendation": "Introduce 2-day maintenance refeed to restore leptin and T3 levels" if is_plateau else "Maintain current deficit"
         }
 
-    # ── Intent Analysis & Mathematical Calculations ────────────
+    # ── Query Intent & Semantics Analyzer ──────────────────────
     def analyze_query_intent(self, question, profile, current_weight, ml_res, target_weekly_change):
         q_lower = question.lower()
         target_weight = profile.get("target_weight", current_weight - 5.0)
         
-        # 1. Time to goal intent
-        if any(w in q_lower for w in ["time", "long", "reach", "achieve", "goal", "when", "weeks", "days"]):
+        # 1. Time to goal / duration
+        if any(w in q_lower for w in ["time", "long", "reach", "achieve", "goal", "when", "weeks", "days", "schedule", "finish", "date"]):
             remaining_kg = abs(current_weight - target_weight)
             weekly_rate = abs(target_weekly_change) if target_weekly_change != 0 else 0.5
             weeks_needed = remaining_kg / weekly_rate
@@ -75,33 +75,42 @@ class SimplyFitAgent:
                 "days_needed": days_needed
             }
         
-        # 2. Calorie / Nutrition intake intent
-        if any(w in q_lower for w in ["calorie", "eat", "intake", "deficit", "macro", "food", "diet", "tdee"]):
+        # 2. Calorie / Food / Nutrition / Protein
+        if any(w in q_lower for w in ["calorie", "eat", "intake", "deficit", "macro", "food", "diet", "tdee", "protein", "meal"]):
             tdee = profile.get("tdee", 2200)
             inferred_intake = tdee + ml_res["kcal_per_day"]
             target_intake = tdee + (target_weekly_change * 7700) / 7.0
+            protein_g = int(round(current_weight * 1.8))
             return {
                 "intent": "calorie_nutrition",
                 "tdee": int(tdee),
                 "inferred_intake": int(round(inferred_intake)),
-                "target_intake": int(round(target_intake))
+                "target_intake": int(round(target_intake)),
+                "protein_g": protein_g
             }
         
-        # 3. Water weight / Anomaly intent
-        if any(w in q_lower for w in ["water", "spike", "salt", "sodium", "fluctuate", "anomaly", "retention"]):
+        # 3. Fluctuation / Scale noise / Water weight / Salt
+        if any(w in q_lower for w in ["fluctuat", "water", "spike", "salt", "sodium", "scale", "anomaly", "retention", "bounce", "up and down", "vary"]):
             return {
                 "intent": "water_weight",
                 "anomalies": ml_res["anomalies_detected"]
             }
 
-        # 4. Disease / Medical guideline intent
-        if any(w in q_lower for w in ["disease", "hypertension", "diabetes", "pcos", "ckd", "pressure", "sugar", "condition", "doctor"]):
+        # 4. Plateau / Slowdown
+        if any(w in q_lower for w in ["plateau", "stuck", "slow", "stopped", "not moving", "stagnant", "stagnate"]):
+            return {
+                "intent": "plateau",
+                "anomalies": ml_res["anomalies_detected"]
+            }
+
+        # 5. Disease / Medical guideline
+        if any(w in q_lower for w in ["disease", "hypertension", "diabetes", "pcos", "ckd", "pressure", "sugar", "condition", "doctor", "health"]):
             return {
                 "intent": "medical_guideline",
                 "disease": profile.get("disease", "none")
             }
 
-        # 5. General progress intent
+        # 6. General progress
         return {"intent": "general_progress"}
 
     # ── Agentic Execution Loop ────────────────────────────────
@@ -111,7 +120,6 @@ class SimplyFitAgent:
         if disease == "none" and profile.get("diseases"):
             disease = profile["diseases"][0] if profile["diseases"] else "none"
 
-        # Step 1: Tool Executions
         ml_res = self._tool_infer_calorie_balance(weight_log, target_weekly_change)
         forecast_res = self._tool_forecast_trajectory(weight_log)
         rag_res = self._tool_retrieve_clinical_guidelines(question, disease)
@@ -122,7 +130,7 @@ class SimplyFitAgent:
 
         trace.append({
             "step": 1,
-            "thought": f"Query intent classified as '{intent_info['intent']}'. Executing EWMA signal processing, Isolation Forest anomaly filter, LSTM forecasting, and Clinical RAG vector retrieval.",
+            "thought": f"Query intent: '{intent_info['intent']}'. Executing EWMA signal processing, Isolation Forest anomaly filter, LSTM forecasting, and Clinical RAG vector retrieval.",
             "selected_tools": ["infer_calorie_balance", "forecast_trajectory", "retrieve_clinical_guidelines", "check_plateau_status"]
         })
 
@@ -152,28 +160,29 @@ class SimplyFitAgent:
             ]
         })
 
-        # Gemini API or Intent-Matched Synthesis
+        # Gemini API or Conversational Synthesis
         api_key = gemini_api_key or os.getenv("GEMINI_API_KEY")
         if api_key:
             try:
                 from google import genai
                 client = genai.Client(api_key=api_key)
                 system_prompt = f"""
-                You are Simply-Fit AI Coach. Answer the user's specific question directly and concisely (<100 words).
+                You are Simply-Fit AI Coach. Answer the user's specific question directly, empathetically, and accurately (<120 words).
                 
-                USER PROFILE & Intent Data:
+                USER PROFILE & LIVE METRICS:
                 - Question: "{question}"
                 - Question Intent: {intent_info['intent']}
-                - Calculated Intent Data: {json.dumps(intent_info)}
-                - Current Smoothed Weight: {current_weight} kg
-                - Inferred Daily Deficit/Surplus: {ml_res['kcal_per_day']} kcal/day
-                - 7-Day LSTM Forecast: {forecast_res}
+                - Calculated Intent Metrics: {json.dumps(intent_info)}
+                - Current Smoothed Fat Weight: {current_weight} kg
+                - Inferred Daily Calorie Deficit/Surplus: {ml_res['kcal_per_day']} kcal/day
+                - 7-Day Predicted Trajectory: {forecast_res}
                 - Medical Condition: {disease}
-                - Retrieved Medical Guidelines: {json.dumps(rag_res)}
+                - Retrieved Clinical RAG Guidelines: {json.dumps(rag_res)}
 
                 Rules:
-                1. Answer the exact question asked first! (If asked about time to goal, give exact weeks/days calculation. If asked about calories, give intake numbers).
-                2. Be encouraging, precise, and concise.
+                1. Answer the exact question asked first! If asked why weight fluctuates, explain water/sodium noise. If asked about time to goal, give exact weeks/days calculation.
+                2. Use the calculated intent data provided above.
+                3. Keep response concise, warm, professional, and medically safe.
                 """
                 try:
                     res = client.models.generate_content(model="gemini-2.5-flash", contents=system_prompt)
@@ -206,12 +215,10 @@ class SimplyFitAgent:
             target_date = (datetime.now() + timedelta(days=days)).strftime("%d %b %Y")
 
             return (
-                f"🎯 **Estimated Time to Reach Goal:**\n\n"
-                f"• **Current Smoothed Weight:** {current_weight} kg\n"
-                f"• **Target Goal Weight:** {target_w} kg (*{rem_kg} kg remaining*)\n"
-                f"• **Target Pace:** {abs(target_weekly_change):.1f} kg/week\n\n"
-                f"At your target rate of **{abs(target_weekly_change):.1f} kg/week**, it will take approximately **{weeks} weeks** (~**{days} days**). "
-                f"Your estimated goal completion date is **{target_date}**."
+                f"🎯 **Estimated Timeline to Reach Goal:**\n\n"
+                f"To reach your goal weight of **{target_w} kg** from your current smoothed weight of **{current_weight} kg** ({rem_kg} kg remaining), "
+                f"at your target rate of **{abs(target_weekly_change):.1f} kg/week**, it will take approximately **{weeks} weeks** (~**{days} days**).\n\n"
+                f"📅 **Estimated Goal Completion Date:** **{target_date}**."
             )
 
         # Intent 2: Calorie & Nutrition
@@ -219,45 +226,63 @@ class SimplyFitAgent:
             tdee = intent_info["tdee"]
             inferred = intent_info["inferred_intake"]
             target_intake = intent_info["target_intake"]
+            protein_g = intent_info["protein_g"]
 
             return (
-                f"🥗 **Daily Calorie & Nutrition Breakdown:**\n\n"
-                f"• **Estimated TDEE (Maintenance):** {tdee} kcal/day\n"
+                f"🥗 **Calorie & Macro Target Breakdown:**\n\n"
+                f"• **Maintenance (TDEE):** {tdee} kcal/day\n"
                 f"• **Inferred Current Intake:** ~{inferred} kcal/day (*{ml_res['kcal_per_day']:+.0f} kcal balance*)\n"
-                f"• **Recommended Daily Intake:** **{target_intake} kcal/day** to achieve your pace of {target_weekly_change:+.1f} kg/week."
+                f"• **Recommended Target Intake:** **{target_intake} kcal/day** for {target_weekly_change:+.1f} kg/week pace.\n"
+                f"• **Recommended Daily Protein:** **{protein_g}g / day** (1.8 g/kg) to preserve lean muscle."
             )
 
-        # Intent 3: Water Weight
+        # Intent 3: Fluctuation / Scale Noise / Water Weight
         if intent == "water_weight":
             anomalies = intent_info["anomalies"]
             return (
-                f"💧 **Water Weight & Sodium Fluctuation:**\n\n"
-                f"Isolation Forest detected **{anomalies} temporary water spikes** in your log. "
-                f"Daily scale weight varies by 0.5–1.5 kg due to sodium retention and glycogen storage. "
-                f"Your true EWMA smoothed fat mass trend is **{current_weight} kg**."
+                f"🌊 **Why Daily Scale Weight Fluctuates:**\n\n"
+                f"Daily scale readings fluctuate by 0.5–1.5 kg due to sodium retention, glycogen storage, and digestive hydration—not actual fat gain.\n\n"
+                f"• Isolation Forest flagged **{anomalies} temporary water spikes** in your log.\n"
+                f"• Your true **EWMA smoothed fat mass trend** is **{current_weight} kg**."
             )
 
-        # Intent 4: Medical Guidelines
+        # Intent 4: Plateau
+        if intent == "plateau":
+            is_p = plateau_res.get("is_plateau")
+            change_14 = plateau_res.get("change_14d", 0.0)
+            if is_p:
+                return (
+                    f"⚠️ **Metabolic Plateau Analysis:**\n\n"
+                    f"Your 14-day weight change is **{change_14:+.2f} kg**, indicating a weight plateau due to metabolic slowdown.\n\n"
+                    f"💡 **Recommendation:** Introduce a 2-day diet break at maintenance calories (~{profile.get('tdee', 2200)} kcal/day) to restore leptin and thyroid hormone (T3) levels."
+                )
+            else:
+                return (
+                    f"✅ **No Plateau Detected:**\n\n"
+                    f"Your weight is steadily changing ({change_14:+.2f} kg over 14 days). "
+                    f"Your current daily calorie balance is **{ml_res['kcal_per_day']:+.0f} kcal/day**."
+                )
+
+        # Intent 5: Medical Guidelines
         if intent == "medical_guideline":
             disease = profile.get("disease", "none")
-            msg = f"🩺 **Medical Guidance for {disease}:**\n\n"
+            msg = f"🩺 **Medical Guidelines for {disease}:**\n\n"
             if rag_res and disease != "none":
                 top = rag_res[0]
-                msg += f"• **Clinical Protocol:** {top['recommendation']} *(Source: {top['source']})*\n"
+                msg += f"• **Clinical Protocol:** {top['recommendation']}\n• **Source:** {top['source']}"
             else:
-                msg += f"• No specific medical restrictions set. Ensure balanced micronutrient intake and stay hydrated."
+                msg += f"• No specific medical conditions flagged. Ensure adequate hydration and balanced micronutrients."
             return msg
 
-        # Intent 5: General Progress
-        recent = ml_res["smoothed"]
+        # Intent 6: General Progress
         weekly = ml_res["weekly_kg_change"]
         on_track = abs(weekly - target_weekly_change) < 0.15
 
-        msg = f"📊 **Your Progress Summary:**\n\n"
+        msg = f"📊 **Your Weight Trend & Progress:**\n\n"
         msg += f"• **Current Smoothed Weight:** {current_weight} kg\n"
-        msg += f"• **7-Day Trend:** {weekly:+.2f} kg/week (Target: {target_weekly_change:+.1f} kg/week)\n"
+        msg += f"• **Weekly Rate:** {weekly:+.2f} kg/week (Target: {target_weekly_change:+.1f} kg/week)\n"
         msg += f"• **Inferred Daily Balance:** {ml_res['kcal_per_day']:+.0f} kcal/day\n\n"
-        msg += "You are right on track! Keep up your current routine." if on_track else "You are slightly off pace. Consider adjusting daily intake by ~150 kcal."
+        msg += "You are right on pace! Keep going." if on_track else "You are slightly off pace. A small daily adjustment of ~150 kcal will bring you back on schedule."
         
         return msg
 
