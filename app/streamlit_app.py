@@ -1,3 +1,10 @@
+import sys
+import os
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -8,7 +15,6 @@ from datetime import datetime, timedelta
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import IsolationForest
 import pandas as pd
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
