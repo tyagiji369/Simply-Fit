@@ -1,0 +1,51 @@
+[
+  {
+    "id": "guideline_001",
+    "condition": "Hypertension",
+    "topic": "Sodium and Electrolyte Management",
+    "recommendation": "Limit daily sodium intake to < 2,000 mg (approx. 5g table salt). Increase dietary potassium through whole vegetables and low-GI fruits unless contraindicated by renal disease.",
+    "source": "WHO / ACC / AHA Guidelines"
+  },
+  {
+    "id": "guideline_002",
+    "condition": "Type 2 Diabetes",
+    "topic": "Glycemic Control & Carbohydrate Management",
+    "recommendation": "Prioritize complex carbohydrates with low glycemic index (< 55). Distribute carbohydrate intake evenly across meals to prevent postprandial glucose spikes. Maintain daily fiber intake > 30g.",
+    "source": "ADA Medical Standards of Care"
+  },
+  {
+    "id": "guideline_003",
+    "condition": "Weight Plateau",
+    "topic": "Metabolic Adaptation Management",
+    "recommendation": "When weight plateaus for > 14 days on a consistent caloric deficit, re-evaluate TDEE based on current lower body mass. Introduce 2-day diet break at estimated maintenance calories to restore leptin and thyroid hormone (T3) levels.",
+    "source": "Clinical Nutrition Therapy Protocols"
+  },
+  {
+    "id": "guideline_004",
+    "condition": "PCOS",
+    "topic": "Insulin Sensitivity & Macronutrient Ratios",
+    "recommendation": "Focus on high-protein (25-30% total energy), low-glycemic dietary patterns to improve insulin sensitivity. Limit refined sugars and emphasize anti-inflammatory omega-3 fatty acids.",
+    "source": "Monash PCOS Evidence-Based Guidelines"
+  },
+  {
+    "id": "guideline_005",
+    "condition": "CKD",
+    "topic": "Protein and Mineral Regulation",
+    "recommendation": "For non-dialysis Chronic Kidney Disease, restrict dietary protein to 0.6-0.8 g/kg body weight. Monitor serum potassium, phosphorus, and sodium levels carefully.",
+    "source": "KDOQI Clinical Practice Guidelines"
+  },
+  {
+    "id": "guideline_006",
+    "condition": "NAFLD",
+    "topic": "Hepatic Steatosis & Caloric Deficit",
+    "recommendation": "Aim for a 7-10% total body weight reduction at a rate of 0.5-1.0 kg/week. Eliminate fructose-sweetened beverages and ultra-processed foods to reduce intrahepatic fat content.",
+    "source": "EASL-EASD-EASO Clinical Practice Guidelines"
+  },
+  {
+    "id": "guideline_007",
+    "condition": "Hypothyroidism",
+    "topic": "Metabolic Slowdown & Iodine/Selenium",
+    "recommendation": "Ensure adequate iodine and selenium intake for thyroid hormone synthesis. Allow at least a 4-hour window between thyroid medication administration and calcium/iron supplements or high-fiber meals.",
+    "source": "American Thyroid Association Protocols"
+  }
+]
