@@ -40,6 +40,10 @@ class SimplyFitAgent:
     when available, deterministic fallback responses otherwise.
     """
 
+    # Tried in order; first model that responds wins. Google retires old
+    # model names over time, so the newest pinned model comes first.
+    GEMINI_MODELS = ("gemini-3.6-flash", "gemini-2.5-flash")
+
     def __init__(self):
         self.tools = {
             "infer_calorie_balance": self._tool_infer_calorie_balance,
@@ -79,10 +83,11 @@ class SimplyFitAgent:
         }
 
     # ── Query Intent & Semantics Analyzer ──────────────────────
-    # Keyword groups per intent. The intent with the MOST keyword matches
-    # wins (ties broken by group order), so a question like "what should my
-    # doctor know about my hypertension diet" routes to medical_guideline
-    # (two medical hits) rather than calorie_nutrition (one hit).
+    # Keyword groups per intent. The intent with the highest keyword score
+    # wins (ties broken by group order). Disease-specific terms count
+    # double: a disease name is an unambiguous medical signal, while
+    # generic words like "diet" or "eat" routinely appear in medical
+    # questions too.
     INTENT_KEYWORDS = {
         "time_to_goal":     ["time", "long", "reach", "achieve", "goal", "when",
                              "weeks", "days", "schedule", "finish", "date"],
@@ -93,10 +98,12 @@ class SimplyFitAgent:
                              "up and down", "vary"],
         "plateau":          ["plateau", "stuck", "slow", "stopped",
                              "not moving", "stagnant", "stagnate"],
-        "medical_guideline": ["disease", "hypertension", "diabetes", "pcos",
-                              "ckd", "pressure", "sugar", "condition",
+        "medical_guideline": ["disease", "pressure", "sugar", "condition",
                               "doctor", "health"],
     }
+    # Weight-2 terms for the medical intent.
+    MEDICAL_DISEASE_TERMS = ("hypertension", "diabetes", "pcos", "ckd",
+                             "hypothyroidism", "nafld", "kidney", "thyroid")
 
     def analyze_query_intent(self, question, profile, current_weight, ml_res, target_weekly_change):
         q_lower = question.lower()
@@ -106,6 +113,9 @@ class SimplyFitAgent:
             intent: sum(1 for kw in kws if kw in q_lower)
             for intent, kws in self.INTENT_KEYWORDS.items()
         }
+        scores["medical_guideline"] += 2 * sum(
+            1 for kw in self.MEDICAL_DISEASE_TERMS if kw in q_lower
+        )
         best_intent = max(scores, key=lambda k: (scores[k], -list(scores).index(k)))
         if scores[best_intent] == 0:
             best_intent = "general_progress"
@@ -212,7 +222,10 @@ class SimplyFitAgent:
             ]
         })
 
-        # Gemini API or Conversational Synthesis
+        # Gemini API synthesis (deterministic templates as fallback).
+        # Model chain: pinned current model first; older accounts may still
+        # serve 2.5. Google retires old model names for new keys, so keep
+        # this list current (verified 2026-08: gemini-3.6-flash works).
         api_key = gemini_api_key or os.getenv("GEMINI_API_KEY")
         if api_key:
             try:
@@ -220,7 +233,7 @@ class SimplyFitAgent:
                 client = genai.Client(api_key=api_key)
                 system_prompt = f"""
                 You are Simply-Fit AI Coach. Answer the user's specific question directly, empathetically, and accurately (<120 words).
-                
+
                 USER PROFILE & LIVE METRICS:
                 - Question: "{question}"
                 - Question Intent: {intent_info['intent']}
@@ -236,13 +249,17 @@ class SimplyFitAgent:
                 2. Use the calculated intent data provided above.
                 3. Keep response concise, warm, professional, and medically safe.
                 """
-                try:
-                    res = client.models.generate_content(model="gemini-2.5-flash", contents=system_prompt)
-                    response_text = res.text
-                except Exception:
-                    res = client.models.generate_content(model="gemini-1.5-flash", contents=system_prompt)
-                    response_text = res.text
-            except Exception as e:
+                response_text = None
+                for model in self.GEMINI_MODELS:
+                    try:
+                        res = client.models.generate_content(model=model, contents=system_prompt)
+                        response_text = res.text
+                        break
+                    except Exception:
+                        continue
+                if not response_text:
+                    raise RuntimeError("no Gemini model in the chain responded")
+            except Exception:
                 response_text = self._smart_intent_synthesis(intent_info, question, current_weight, ml_res, target_weekly_change, profile, plateau_res, rag_res)
         else:
             response_text = self._smart_intent_synthesis(intent_info, question, current_weight, ml_res, target_weekly_change, profile, plateau_res, rag_res)
