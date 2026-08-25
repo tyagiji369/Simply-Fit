@@ -6,9 +6,15 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 class ClinicalRAGPipeline:
     """
-    Lightweight, deterministic Vector Retrieval-Augmented Generation (RAG)
-    engine over evidence-based medical nutrition therapy guidelines.
-    Uses TF-IDF term-frequency embeddings and Cosine Similarity.
+    Lightweight, deterministic retrieval layer over a small curated set of
+    evidence-based medical nutrition therapy guidelines (7 entries in
+    data/public/clinical_guidelines.json).
+
+    Retrieval uses TF-IDF term vectors and cosine similarity — deliberately
+    simple: with a corpus this small, TF-IDF retrieval is fast, fully
+    reproducible and needs no embeddings model or vector database. Retrieved
+    guidelines are injected into the coach's prompt/context to ground its
+    answers ("retrieval-augmented generation" in the plain sense).
     """
 
     def __init__(self, guidelines_path="data/public/clinical_guidelines.json"):

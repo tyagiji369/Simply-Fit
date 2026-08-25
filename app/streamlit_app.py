@@ -11,6 +11,7 @@ import matplotlib.patches as mpatches
 import matplotlib.ticker as ticker
 import numpy as np
 import random
+import json
 from datetime import datetime, timedelta
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import IsolationForest
@@ -1068,7 +1069,7 @@ elif st.session_state.page == "report":
         (f"Drink roughly {int(35 * w_kg)} ml of water per day ({int(35 * w_kg / 250)} glasses). Thirst is frequently misread as hunger.", False),
     ]
 
-    # Clinical Vector RAG Guidelines Insertion
+    # Clinical guideline retrieval (TF-IDF over curated guidelines)
     if diseases:
         for d in diseases:
             matches = rag_engine.search_guidelines("dietary guidelines", condition=d, top_k=1)
@@ -1082,14 +1083,37 @@ elif st.session_state.page == "report":
                       f'<span>{text}</span></div>')
     st.markdown(recs_html, unsafe_allow_html=True)
 
-    # Model Insights & NHANES Calibration Expander
+    # Model Insights & Data Realism Expander
     slabel("Model Insights & Data Realism")
-    with st.expander("🔬 View CDC NHANES Statistical Validation (Kolmogorov-Smirnov Test)"):
-        if st.button("Run KS Test Calibration", key="ks_test_report_orig"):
+    with st.expander("🔬 Model validation: NHANES alignment & forecast accuracy"):
+        if st.button("Run validation checks", key="ks_test_report_orig"):
+            st.markdown("**Synthetic population vs real CDC NHANES 2017-2018** "
+                        "(KS statistic: 0 = identical distributions)")
             ks_res = run_nhanes_calibration_test(n_users=500)
-            st.write(f"• **Weight KS Improvement:** +{ks_res['weight_ks_improvement_pct']}% (KS Stat: {ks_res['weight_ks_before']} ➔ {ks_res['weight_ks_after']})")
-            st.write(f"• **Age KS Improvement:** +{ks_res['age_ks_improvement_pct']}% (KS Stat: {ks_res['age_ks_before']} ➔ {ks_res['age_ks_after']})")
-            st.write(f"• **Synthetic Mean Weight:** {ks_res['mean_synthetic_weight']} kg vs NHANES Benchmark: {ks_res['mean_nhanes_weight']} kg")
+            st.write(f"• **Weight:** KS {ks_res['weight_ks_before']} (naive parameters) ➔ "
+                     f"{ks_res['weight_ks_after']} (NHANES-calibrated) — "
+                     f"{ks_res['weight_ks_improvement_pct']}% reduction")
+            st.write(f"• **Age:** KS {ks_res['age_ks_before']} (naive parameters) ➔ "
+                     f"{ks_res['age_ks_after']} (NHANES-calibrated) — "
+                     f"{ks_res['age_ks_improvement_pct']}% reduction")
+            st.write(f"• **Reference population:** {ks_res['n_nhanes']:,} real US adults "
+                     f"(NHANES extract committed in `data/public/nhanes_adults.csv`)")
+
+            st.markdown("**7-day forecast accuracy — held-out walk-forward test**")
+            try:
+                with open(os.path.join(ROOT_DIR, "results", "model_evaluation.json")) as f:
+                    ev = json.load(f)
+                st.table(pd.DataFrame({
+                    "Method": ["Linear extrapolation", "Persistence", "LSTM"],
+                    "MAE (kg)": [round(ev["mae_kg"]["linear"], 3),
+                                  round(ev["mae_kg"]["persistence"], 3),
+                                  round(ev["mae_kg"]["lstm"], 3)],
+                }).set_index("Method"))
+                st.caption("On synthetic data the linear extrapolation wins — the simulated "
+                           "trajectories are near-linear by construction. The LSTM is kept as "
+                           "the deep-learning path for real-world data with non-linear patterns.")
+            except FileNotFoundError:
+                st.caption("Run `python -m src.lstm_forecaster` to generate the evaluation report.")
 
     divider()
     _, col_r = st.columns([1, 1])

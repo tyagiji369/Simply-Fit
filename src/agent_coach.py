@@ -1,3 +1,24 @@
+"""
+Conversational AI coach for Simply-Fit.
+
+Design — intent-routed tool calling (NOT an LLM-driven agent loop):
+  1. A keyword-based intent classifier routes the question to one of six
+     intents (time-to-goal, calories/nutrition, fluctuations, plateau,
+     medical guidelines, general progress) and computes the numbers the
+     answer needs.
+  2. Deterministic Python tools always run for every question: calorie
+     inference (src/ml_engine), 7-day forecasting (src/lstm_forecaster),
+     clinical guideline retrieval (src/rag_pipeline) and plateau detection.
+  3. The final response is written by the Google Gemini API when a key is
+     available; otherwise deterministic per-intent templates built from the
+     same tool outputs are used, so the coach works with zero API cost.
+
+The pipeline is fixed on purpose — the LLM never selects which tools run —
+which makes behaviour reproducible and testable without any API key. The
+`trace` returned with each response is an execution log of what actually
+ran, not simulated reasoning.
+"""
+
 import os
 import json
 import math
@@ -13,9 +34,10 @@ load_dotenv()
 
 class SimplyFitAgent:
     """
-    Intelligent Conversational AI Coach for Simply-Fit.
-    Supports intent classification, dynamic calculations (time to goal, calorie targets,
-    water retention, medical RAG), Google Gemini API, and smart conversational synthesis.
+    Conversational AI Coach for Simply-Fit.
+    Intent classification, deterministic tool calls (calorie inference,
+    forecasting, clinical RAG, plateau detection), Gemini API synthesis
+    when available, deterministic fallback responses otherwise.
     """
 
     def __init__(self):
@@ -57,12 +79,39 @@ class SimplyFitAgent:
         }
 
     # ── Query Intent & Semantics Analyzer ──────────────────────
+    # Keyword groups per intent. The intent with the MOST keyword matches
+    # wins (ties broken by group order), so a question like "what should my
+    # doctor know about my hypertension diet" routes to medical_guideline
+    # (two medical hits) rather than calorie_nutrition (one hit).
+    INTENT_KEYWORDS = {
+        "time_to_goal":     ["time", "long", "reach", "achieve", "goal", "when",
+                             "weeks", "days", "schedule", "finish", "date"],
+        "calorie_nutrition": ["calorie", "eat", "intake", "deficit", "macro",
+                              "food", "diet", "tdee", "protein", "meal"],
+        "water_weight":     ["fluctuat", "water", "spike", "salt", "sodium",
+                             "scale", "anomaly", "retention", "bounce",
+                             "up and down", "vary"],
+        "plateau":          ["plateau", "stuck", "slow", "stopped",
+                             "not moving", "stagnant", "stagnate"],
+        "medical_guideline": ["disease", "hypertension", "diabetes", "pcos",
+                              "ckd", "pressure", "sugar", "condition",
+                              "doctor", "health"],
+    }
+
     def analyze_query_intent(self, question, profile, current_weight, ml_res, target_weekly_change):
         q_lower = question.lower()
         target_weight = profile.get("target_weight", current_weight - 5.0)
-        
+
+        scores = {
+            intent: sum(1 for kw in kws if kw in q_lower)
+            for intent, kws in self.INTENT_KEYWORDS.items()
+        }
+        best_intent = max(scores, key=lambda k: (scores[k], -list(scores).index(k)))
+        if scores[best_intent] == 0:
+            best_intent = "general_progress"
+
         # 1. Time to goal / duration
-        if any(w in q_lower for w in ["time", "long", "reach", "achieve", "goal", "when", "weeks", "days", "schedule", "finish", "date"]):
+        if best_intent == "time_to_goal":
             remaining_kg = abs(current_weight - target_weight)
             weekly_rate = abs(target_weekly_change) if target_weekly_change != 0 else 0.5
             weeks_needed = remaining_kg / weekly_rate
@@ -74,9 +123,9 @@ class SimplyFitAgent:
                 "weeks_needed": round(weeks_needed, 1),
                 "days_needed": days_needed
             }
-        
+
         # 2. Calorie / Food / Nutrition / Protein
-        if any(w in q_lower for w in ["calorie", "eat", "intake", "deficit", "macro", "food", "diet", "tdee", "protein", "meal"]):
+        if best_intent == "calorie_nutrition":
             tdee = profile.get("tdee", 2200)
             inferred_intake = tdee + ml_res["kcal_per_day"]
             target_intake = tdee + (target_weekly_change * 7700) / 7.0
@@ -88,23 +137,23 @@ class SimplyFitAgent:
                 "target_intake": int(round(target_intake)),
                 "protein_g": protein_g
             }
-        
+
         # 3. Fluctuation / Scale noise / Water weight / Salt
-        if any(w in q_lower for w in ["fluctuat", "water", "spike", "salt", "sodium", "scale", "anomaly", "retention", "bounce", "up and down", "vary"]):
+        if best_intent == "water_weight":
             return {
                 "intent": "water_weight",
                 "anomalies": ml_res["anomalies_detected"]
             }
 
         # 4. Plateau / Slowdown
-        if any(w in q_lower for w in ["plateau", "stuck", "slow", "stopped", "not moving", "stagnant", "stagnate"]):
+        if best_intent == "plateau":
             return {
                 "intent": "plateau",
                 "anomalies": ml_res["anomalies_detected"]
             }
 
         # 5. Disease / Medical guideline
-        if any(w in q_lower for w in ["disease", "hypertension", "diabetes", "pcos", "ckd", "pressure", "sugar", "condition", "doctor", "health"]):
+        if best_intent == "medical_guideline":
             return {
                 "intent": "medical_guideline",
                 "disease": profile.get("disease", "none")
@@ -113,7 +162,7 @@ class SimplyFitAgent:
         # 6. General progress
         return {"intent": "general_progress"}
 
-    # ── Agentic Execution Loop ────────────────────────────────
+    # ── Tool execution pipeline ───────────────────────────────
     def run_agent(self, profile, weight_log, question, target_weekly_change=-0.5, gemini_api_key=None):
         trace = []
         disease = profile.get("disease", "none")
@@ -130,8 +179,11 @@ class SimplyFitAgent:
 
         trace.append({
             "step": 1,
-            "thought": f"Query intent: '{intent_info['intent']}'. Executing EWMA signal processing, Isolation Forest anomaly filter, LSTM forecasting, and Clinical RAG vector retrieval.",
-            "selected_tools": ["infer_calorie_balance", "forecast_trajectory", "retrieve_clinical_guidelines", "check_plateau_status"]
+            "action": "classify_intent",
+            "intent": intent_info["intent"],
+            "tools_executed": ["infer_calorie_balance", "forecast_trajectory",
+                               "retrieve_clinical_guidelines", "check_plateau_status"],
+            "note": "fixed pipeline: all tools run for every question (no LLM tool selection)"
         })
 
         trace.append({
