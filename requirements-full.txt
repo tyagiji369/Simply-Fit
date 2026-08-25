@@ -1,0 +1,7 @@
+# Full development environment: everything above plus model training,
+# notebook execution and testing.
+-r requirements.txt
+tensorflow-cpu>=2.16
+pytest>=8.0
+jupyter>=1.0
+nbconvert>=7.0

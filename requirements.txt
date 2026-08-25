@@ -1,6 +1,12 @@
-streamlit
-matplotlib
-numpy
-pandas
-scikit-learn
-python-dotenv
+# Core runtime dependencies for the Streamlit app.
+# The app degrades gracefully without the heavy optional packages
+# (TensorFlow -> linear forecast fallback; google-genai -> template coach
+# responses), so they live in requirements-full.txt instead.
+streamlit>=1.35
+matplotlib>=3.8
+numpy>=1.26
+pandas>=2.0
+scikit-learn>=1.4
+scipy>=1.11
+python-dotenv>=1.0
+google-genai>=0.8

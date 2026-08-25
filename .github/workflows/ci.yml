@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-full.txt
+
+      - name: Run tests
+        env:
+          TF_CPP_MIN_LOG_LEVEL: "3"
+        run: pytest -q
+
+      - name: Sanity-import the app entrypoint
+        run: python -c "import ast; ast.parse(open('app/streamlit_app.py').read())"
