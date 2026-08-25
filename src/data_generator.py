@@ -1,8 +1,50 @@
+"""
+Synthetic cohort generator for Simply-Fit.
+
+There is no public dataset of daily weight logs with disease conditions, so
+training data is simulated. The simulation has two parts:
+
+1. Demographics (age, gender, height, start weight) — sampled from
+   distributions fitted to real CDC NHANES 2017-2018 data. The fitted
+   parameters come from data/public/nhanes_adults.csv, a cleaned extract of
+   5,434 US adults built directly from the CDC public files (DEMO_J.XPT and
+   BMX_J.XPT, https://wwwn.cdc.gov/nchs/nhanes/). See src/calibration.py for
+   the distribution alignment check.
+
+2. Physiology and behaviour (BMR via Mifflin-St Jeor, TDEE, goal, adherence,
+   metabolic adaptation, daily noise) — simulated from published equations
+   and clinical weight-variability assumptions. This is the part the project
+   actually contributes: the demographic realism is borrowed from NHANES on
+   purpose, so the trained model sees a realistic population.
+
+The original version of this generator used arbitrary parameter choices
+(age ~ Uniform(18, 60), weight ~ N(88.5, 25)). The first NHANES validation
+round (notebooks/05_nhanes_validation.ipynb) showed that cohort was ~7 kg
+heavier and ~10 years younger than the real adult population, so the
+demographic parameters were re-fitted to NHANES. The "naive" parameterization
+is kept in src/calibration.py as the documented before/after baseline.
+"""
+
 import numpy as np
 import pandas as pd
 
 KCAL_PER_KG = 7700
 DAYS = 90
+
+# Demographic parameters fitted to the cleaned NHANES 2017-2018 adult extract
+# (data/public/nhanes_adults.csv, n = 5,434; adults 18-80).
+#   * age ~ Normal(49.7, 18.6), clipped to [18, 80]
+#   * start weight ~ Lognormal per gender (fitted on log-scale moments).
+#     NHANES weight is right-skewed; a lognormal matches the real shape far
+#     better than a Gaussian (KS 0.035 vs 0.100 — see src/calibration.py).
+#   * height ~ Normal per gender
+NHANES_FIT = {
+    "p_female": 0.517,
+    "age_mean": 49.7,
+    "age_std": 18.6,
+    "height": {"Male": (173.5, 7.7), "Female": (159.7, 7.0)},
+    "weight_lognormal": {"Male": (4.4513, 0.2385), "Female": (4.3068, 0.2703)},
+}
 
 DISEASE_OPTIONS = [
     None,
@@ -18,7 +60,7 @@ DISEASE_OPTIONS = [
 
 
 def calculate_bmr(weight, height, age, gender):
-    """Mifflin St Jeor equation."""
+    """Mifflin-St Jeor equation (kcal/day)."""
     if gender == "Male":
         return 10 * weight + 6.25 * height - 5 * age + 5
     return 10 * weight + 6.25 * height - 5 * age - 161
@@ -35,18 +77,30 @@ def calculate_tdee(bmr, activity_level):
     return bmr * multipliers[activity_level]
 
 
-def generate_user(user_id, random_state=None):
+def generate_user(user_id, random_state=None, days=DAYS):
     """
-    Generates one synthetic user with 90 days of weight readings.
-    Age and weight are sampled from NHANES-calibrated distributions
-    to match real population statistics.
+    Generates one synthetic user with `days` daily weight readings.
+
+    Age and start weight are sampled from NHANES-fitted distributions so the
+    synthetic population matches real US adult demographics (see module
+    docstring). The daily weight trajectory is then simulated from energy
+    balance: true weight changes by (daily calorie delta / 7700) per day,
+    and the observed scale reading adds glycogen, sodium and measurement
+    noise on top. Conditions that cause water retention inflate the
+    corresponding noise terms.
     """
     rng = np.random.RandomState(random_state)
 
-    gender         = rng.choice(["Male", "Female"])
-    age            = int(np.clip(rng.normal(47.3, 17.2), 18, 80))
-    height         = rng.uniform(155, 190)
-    start_weight   = np.clip(rng.normal(81.0, 21.5), 32, 220)
+    gender = "Female" if rng.rand() < NHANES_FIT["p_female"] else "Male"
+
+    age = int(np.clip(rng.normal(NHANES_FIT["age_mean"], NHANES_FIT["age_std"]), 18, 80))
+
+    h_mean, h_std = NHANES_FIT["height"][gender]
+    height = rng.normal(h_mean, h_std)
+
+    w_mu, w_sigma = NHANES_FIT["weight_lognormal"][gender]
+    start_weight = np.clip(rng.lognormal(w_mu, w_sigma), 32, 220)
+
     activity_level = rng.choice(
         ["sedentary", "light", "moderate", "active", "very_active"]
     )
@@ -75,8 +129,8 @@ def generate_user(user_id, random_state=None):
     true_weight = start_weight
     weight_log  = []
 
-    for day in range(DAYS):
-        adaptation_factor = 1 - metabolic_adapt_rate * (day / DAYS)
+    for day in range(days):
+        adaptation_factor = 1 - metabolic_adapt_rate * (day / days)
         adapted_delta     = target_daily_delta * adaptation_factor
 
         if rng.rand() < adherence:
@@ -121,18 +175,23 @@ def generate_user(user_id, random_state=None):
     }
 
 
-def generate_dataset(n_users=500, days=DAYS):
+def generate_dataset(n_users=500, days=DAYS, seed=42):
     """
     Generates a full dataset of n_users synthetic users.
-    Returns a flat DataFrame with one row per user per day.
+
+    Returns a flat DataFrame with one row per user per day. With a fixed
+    `seed` the dataset is fully reproducible.
     """
-    users = [generate_user(i) for i in range(n_users)]
-    rows  = []
+    users = [
+        generate_user(i, random_state=None if seed is None else seed + i, days=days)
+        for i in range(n_users)
+    ]
+    rows = []
     for user in users:
         base = {k: v for k, v in user.items() if k != "weight_log"}
         for day, weight in enumerate(user["weight_log"]):
-            row           = base.copy()
-            row["day"]    = day + 1
+            row        = base.copy()
+            row["day"] = day + 1
             row["weight"] = weight
             rows.append(row)
     return pd.DataFrame(rows)
